@@ -533,7 +533,7 @@ button:disabled{ opacity:0.55 !important; }
 
 <!-- ALERTS VIEW -->
 <div class="view active" id="view-alerts">
-  <div class="banner">backend not wired yet, showing demo data. real alerts will replace this once poller.js and the api are live.</div>
+  <div class="banner">shows demo data until a backend url is set in Backup. once set, this pulls real alerts from the api instead.</div>
   <div class="panel">
     <label>filter by category</label>
     <div class="chips" id="alert-filters">
@@ -624,7 +624,7 @@ button:disabled{ opacity:0.55 !important; }
 
 <!-- WATCH VIEW -->
 <div class="view" id="view-watch">
-  <div class="banner">watch is the permanent keyed list. it runs local only until the railway backend is wired, then syncs to redis and gets ai summaries from the readme.</div>
+  <div class="banner">watch is the permanent keyed list. it saves locally right away and also syncs to the backend once a url is set in Backup. ai summaries from the readme still need a piece on the backend that doesn't exist yet.</div>
   <div class="panel">
     <label for="watch-key">admin key</label>
     <input type="password" id="watch-key" placeholder="set once, stored on this device only">
@@ -777,6 +777,12 @@ button:disabled{ opacity:0.55 !important; }
 <div class="view" id="view-backup">
   <div class="banner">everything in Watch, My List, Site Watch, catalog entries filed from Find, and the Shodan key lives only in this browser on this device right now. Export All bundles all of it into one file. Import All reads that file back in on any device, so an investigation started here can pick back up somewhere else exactly where it left off.</div>
   <div class="panel">
+    <label for="ba-apibase">backend url, once the api service is live</label>
+    <input type="text" id="ba-apibase" placeholder="https://your-api.up.railway.app">
+    <button id="ba-apibase-save">save and test</button>
+    <div class="status" id="ba-apibase-status"></div>
+  </div>
+  <div class="panel">
     <label>export</label>
     <button id="ba-export">export all</button>
     <div class="status" id="ba-export-status"></div>
@@ -789,6 +795,30 @@ button:disabled{ opacity:0.55 !important; }
 </div>
 
 <script>
+/* ---------- backend connection, empty until the api service is live ---------- */
+function apiBase(){
+  return (localStorage.getItem('tp_api_base') || '').replace(/\/$/, '');
+}
+async function apiGet(path){
+  const base = apiBase();
+  if(!base) return null;
+  const res = await fetch(base + path);
+  if(!res.ok) throw new Error('server answered ' + res.status);
+  return res.json();
+}
+async function apiPost(path, body){
+  const base = apiBase();
+  if(!base) return null;
+  const res = await fetch(base + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(function(){ return {}; });
+  if(!res.ok) throw new Error(data.error || ('server answered ' + res.status));
+  return data;
+}
+
 /* ---------- tabs, now inside a hamburger menu ---------- */
 const tabs = document.querySelectorAll('.tab');
 const views = document.querySelectorAll('.view');
@@ -848,6 +878,7 @@ function daysAgoIso(n){
 }
 
 let alertFilter = 'all';
+let liveAlerts = null;
 const alertFiltersEl = document.getElementById('alert-filters');
 alertFiltersEl.addEventListener('click', function(e){
   const chip = e.target.closest('.chip');
@@ -859,9 +890,21 @@ alertFiltersEl.addEventListener('click', function(e){
   renderAlerts();
 });
 
+async function loadLiveAlerts(){
+  if(!apiBase()) return;
+  try {
+    const rows = await apiGet('/');
+    liveAlerts = rows;
+    renderAlerts();
+  } catch(e){
+    liveAlerts = null;
+  }
+}
+
 function renderAlerts(){
   const listEl = document.getElementById('alerts-list');
-  const filtered = DEMO_ALERTS.filter(function(a){
+  const source = liveAlerts || DEMO_ALERTS;
+  const filtered = source.filter(function(a){
     return alertFilter === 'all' || a.category === alertFilter;
   });
   if(filtered.length === 0){
@@ -890,6 +933,7 @@ function renderAlerts(){
   listEl.innerHTML = html;
 }
 renderAlerts();
+loadLiveAlerts();
 
 /* ---------- FIND ---------- */
 const q = document.getElementById('q');
@@ -1100,13 +1144,39 @@ function addToWatch(fullname){
     saveWatch(data);
   }
   renderWatch();
-  alert(fullname + ' added to watch (local only, not yet synced to backend)');
+  if(apiBase()){
+    apiPost('/watchlist', { repo: fullname, category: 'critical', key: key })
+      .then(function(){ alert(fullname + ' added to watch, synced to backend'); })
+      .catch(function(err){ alert(fullname + ' saved locally, backend sync failed, ' + err.message); });
+  } else {
+    alert(fullname + ' added to watch (local only, no backend url set yet)');
+  }
 }
 function removeFromWatch(fullname){
   const data = loadWatch();
   delete data[fullname];
   saveWatch(data);
   renderWatch();
+  if(apiBase()){
+    const key = localStorage.getItem('tp_admin_key') || '';
+    apiPost('/watchlist/remove', { repo: fullname, key: key }).catch(function(){});
+  }
+}
+async function loadLiveWatch(){
+  if(!apiBase()) return;
+  try {
+    const rows = await apiGet('/watchlist');
+    const data = loadWatch();
+    rows.forEach(function(r){
+      if(!data[r.repo]){
+        data[r.repo] = { category: r.category, addedAt: new Date().toISOString(), summary: null, summaryUpdatedAt: null };
+      } else {
+        data[r.repo].category = r.category;
+      }
+    });
+    saveWatch(data);
+    renderWatch();
+  } catch(e){}
 }
 function renderWatch(){
   const search = document.getElementById('watch-search').value.trim().toLowerCase();
@@ -1144,6 +1214,7 @@ document.getElementById('watch-search').addEventListener('input', renderWatch);
 const savedKey = localStorage.getItem('tp_admin_key');
 if(savedKey) document.getElementById('watch-key').value = savedKey;
 renderWatch();
+loadLiveWatch();
 
 /* ---------- MY LIST (no key, local only, always) ---------- */
 function loadMyList(){
@@ -2449,6 +2520,23 @@ function eqOpenCatalogForm(fullname, desc, lang, cardEl){
     eqSaveDiscovered(list);
     formEl.querySelector('.eq-form-status').textContent = 'filed into ' + EQ_DB[cat].label;
     eqRenderDiscoveredList();
+    if(apiBase()){
+      const key = localStorage.getItem('tp_admin_key') || '';
+      apiPost('/catalog', {
+        name: fullname,
+        category: cat,
+        capability_tags: [],
+        vendor: vendor || fullname.split('/')[0],
+        license: 'unknown, verify on repo',
+        url: 'github.com/' + fullname,
+        discovered_from_repo: fullname,
+        key: key
+      }).then(function(){
+        formEl.querySelector('.eq-form-status').textContent = 'filed into ' + EQ_DB[cat].label + ', synced to backend';
+      }).catch(function(err){
+        formEl.querySelector('.eq-form-status').textContent = 'filed into ' + EQ_DB[cat].label + ', backend sync failed, ' + err.message;
+      });
+    }
   });
 }
 
@@ -2510,6 +2598,27 @@ async function swCheckOne(url){
   var data = swLoad();
   var entry = data[url];
   if(!entry) return;
+
+  if(apiBase()){
+    try {
+      var relayResult = await apiPost('/check', { url: url, nickname: entry.nickname });
+      var now = new Date().toISOString();
+      entry.history.unshift({ hash: relayResult.hash, checked_at: now, changed: relayResult.changed });
+      entry.history = entry.history.slice(0, 50);
+      entry.lastHash = relayResult.hash;
+      entry.lastCheckedAt = now;
+      entry.lastError = null;
+      swSay(relayResult.changed ? 'changed since last check, via backend relay' : 'no change detected, via backend relay', true);
+    } catch(err){
+      entry.lastError = 'backend relay reachable but the check failed, ' + err.message;
+      entry.lastCheckedAt = new Date().toISOString();
+      swSay(entry.lastError, false);
+    }
+    swSave(data);
+    swRender();
+    return;
+  }
+
   try {
     var res = await fetch(url);
     if(!res.ok){ throw new Error('server answered ' + res.status); }
@@ -2527,7 +2636,7 @@ async function swCheckOne(url){
     entry.lastError = null;
     swSay(changed ? 'changed since last check' : 'no change detected', true);
   } catch(err){
-    entry.lastError = 'request failed, this url likely blocks cross origin requests from a browser, this needs a backend relay to check';
+    entry.lastError = 'request failed, this url likely blocks cross origin requests from a browser, set a backend url in Backup to check this one through the relay instead';
     entry.lastCheckedAt = new Date().toISOString();
     swSay(entry.lastError, false);
   }
@@ -2625,7 +2734,29 @@ async function swCheckAll(){
 document.getElementById('sw-checkall').addEventListener('click', swCheckAll);
 
 /* ---------- BACKUP, export and import everything stored on this device ---------- */
-var BACKUP_KEYS = ['tp_mylist', 'tp_watch', 'tp_admin_key', 'tp_sitewatch', 'tp_eq_discovered', 'sd_api_key'];
+var BACKUP_KEYS = ['tp_mylist', 'tp_watch', 'tp_admin_key', 'tp_sitewatch', 'tp_eq_discovered', 'sd_api_key', 'tp_api_base'];
+
+var savedApiBase = localStorage.getItem('tp_api_base');
+if(savedApiBase) document.getElementById('ba-apibase').value = savedApiBase;
+document.getElementById('ba-apibase-save').addEventListener('click', async function(){
+  var val = document.getElementById('ba-apibase').value.trim().replace(/\/$/, '');
+  var statusEl = document.getElementById('ba-apibase-status');
+  if(!val){
+    localStorage.removeItem('tp_api_base');
+    statusEl.textContent = 'cleared, everything falls back to local only again';
+    return;
+  }
+  localStorage.setItem('tp_api_base', val);
+  statusEl.textContent = 'saved, testing connection';
+  try {
+    await apiGet('/');
+    statusEl.textContent = 'connected, alerts, watch, catalog, and site watch now sync to this backend';
+    loadLiveAlerts();
+    loadLiveWatch();
+  } catch(err){
+    statusEl.textContent = 'saved, but could not reach it yet, ' + err.message;
+  }
+});
 
 function baExportAll(){
   var bundle = { exported: new Date().toISOString(), source: 'repo find backup', data: {} };
@@ -2655,8 +2786,12 @@ function baRefreshEverything(){
   if(savedSw) document.getElementById('sw-key').value = savedSw;
   var savedShodan = localStorage.getItem('sd_api_key');
   if(savedShodan) sdKey.value = savedShodan;
+  var savedApi = localStorage.getItem('tp_api_base');
+  document.getElementById('ba-apibase').value = savedApi || '';
   eqRenderDiscoveredList();
   eqRenderLookup();
+  loadLiveAlerts();
+  loadLiveWatch();
 }
 
 document.getElementById('ba-import-file').addEventListener('change', function(e){
@@ -2719,7 +2854,7 @@ document.getElementById('eq-stumble-btn').addEventListener('click', eqStumble);
 
 /* ---------- STUMBLE, alerts ---------- */
 document.getElementById('al-stumble-btn').addEventListener('click', function(){
-  var filtered = DEMO_ALERTS.filter(function(a){ return alertFilter === 'all' || a.category === alertFilter; });
+  var filtered = (liveAlerts || DEMO_ALERTS).filter(function(a){ return alertFilter === 'all' || a.category === alertFilter; });
   var el = document.getElementById('al-stumble-result');
   if(!filtered.length){ el.innerHTML = '<div class="empty">nothing in this filter to stumble into</div>'; return; }
   var a = filtered[Math.floor(Math.random() * filtered.length)];

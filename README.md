@@ -8,6 +8,6 @@ Live at repofind-delta.vercel.app
 
 This app is checked every morning by Control Troll.
 
-Latest change. Updated the comic skin.
+Latest change. Wired the app to the backend through a backend url field on the backup tab.
 
 See CHANGELOG.md for the full history.
