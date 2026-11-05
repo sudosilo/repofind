@@ -528,6 +528,7 @@ button:disabled{ opacity:0.55 !important; }
     <div class="tab" data-view="shodan">SHODAN</div>
     <div class="tab" data-view="catalog">CATALOG</div>
     <div class="tab" data-view="sitewatch">SITE WATCH</div>
+    <div class="tab" data-view="rabbit">RABBIT</div>
     <div class="tab" data-view="backup">BACKUP</div>
   </div>
 </div>
@@ -709,6 +710,22 @@ button:disabled{ opacity:0.55 !important; }
     <div class="status" id="rs-cat-status"></div>
   </div>
   <div id="rs-catalog"></div>
+</div>
+
+<!-- RABBIT VIEW -->
+<div class="view" id="view-rabbit">
+  <div class="banner">rabbit runs the stumble terms on its own. each black window pulls a random repo, types out one of its files, holds it for ten seconds, then clears and pulls something different. every pull is logged below.</div>
+  <div class="panel">
+    <div class="btn-row">
+      <button id="rb-toggle">start</button>
+      <button class="btn-ghost" id="rb-export">export log json</button>
+      <button class="btn-ghost" id="rb-clear">clear log</button>
+    </div>
+    <div class="status" id="rb-status"></div>
+  </div>
+  <div id="rb-grid"></div>
+  <div class="count" id="rb-count"></div>
+  <div id="rb-log"></div>
 </div>
 
 <!-- SHODAN VIEW -->
@@ -2765,7 +2782,7 @@ async function swCheckAll(){
 document.getElementById('sw-checkall').addEventListener('click', swCheckAll);
 
 /* ---------- BACKUP, export and import everything stored on this device ---------- */
-var BACKUP_KEYS = ['tp_mylist', 'tp_watch', 'tp_admin_key', 'tp_sitewatch', 'tp_eq_discovered', 'sd_api_key', 'tp_api_base', 'rf_resolver', 'rf_resolver_log'];
+var BACKUP_KEYS = ['tp_mylist', 'tp_watch', 'tp_admin_key', 'tp_sitewatch', 'tp_eq_discovered', 'sd_api_key', 'tp_api_base', 'rf_resolver', 'rf_resolver_log', 'rf_rabbit_log'];
 
 var savedApiBase = localStorage.getItem('tp_api_base');
 if(savedApiBase) document.getElementById('ba-apibase').value = savedApiBase;
@@ -3237,6 +3254,198 @@ document.getElementById('rs-export').addEventListener('click', function(){
   document.getElementById('rs-cat-status').textContent = 'exported ' + Object.keys(rsLoad()).length + ' records';
 });
 rsRenderCatalog();
+</script>
+<style id="rabbit-style">
+#rb-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0;}
+@media (min-width:900px){#rb-grid{grid-template-columns:1fr 1fr 1fr;}}
+.rb-win{background:#000;color:#3cff6b;border:2px solid #000;height:42vh;overflow:hidden;display:flex;flex-direction:column;font-family:'Courier New', Courier, monospace;}
+.rb-head{color:#000;background:#3cff6b;font-size:11px;padding:3px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.rb-body{flex:1;margin:0;padding:6px;font-size:10px;line-height:1.25;white-space:pre-wrap;word-break:break-all;overflow:hidden;color:#3cff6b;background:#000;}
+.rb-body.rb-hold{color:#b8ffc8;}
+</style>
+<script>
+/* ---------- RABBIT, windows that fill with random code ---------- */
+var RB_LOG_KEY = 'rf_rabbit_log';
+var RB_HOLD_MS = 10000;
+var RB_TERMS = [].concat(
+  (typeof FIND_STUMBLE_TERMS !== 'undefined' ? FIND_STUMBLE_TERMS : []),
+  (typeof ARCHIVE_STUMBLE_TERMS !== 'undefined' ? ARCHIVE_STUMBLE_TERMS : [])
+);
+if(!RB_TERMS.length) RB_TERMS = ['retro terminal', 'synthesizer', 'emulator', 'ascii art'];
+var RB_FILES = {
+  'Python': ['main.py', 'app.py', '__main__.py', 'setup.py'],
+  'JavaScript': ['index.js', 'main.js', 'app.js', 'src/index.js'],
+  'TypeScript': ['src/index.ts', 'index.ts', 'src/main.ts'],
+  'C': ['main.c', 'src/main.c', 'Makefile'],
+  'C++': ['main.cpp', 'src/main.cpp', 'CMakeLists.txt'],
+  'Rust': ['src/main.rs', 'src/lib.rs', 'Cargo.toml'],
+  'Go': ['main.go', 'cmd/main.go', 'go.mod'],
+  'Java': ['pom.xml', 'build.gradle'],
+  'HTML': ['index.html'],
+  'Shell': ['install.sh', 'run.sh'],
+  'Lua': ['main.lua', 'init.lua'],
+  'Ruby': ['Gemfile', 'lib/main.rb'],
+  'Assembly': ['main.asm', 'main.s'],
+  'Arduino': ['src/main.cpp'],
+  'Processing': ['sketch.pde']
+};
+var rbRunning = false;
+var rbPool = [];
+var rbSeen = {};
+var rbLastTerm = '';
+var rbSearching = null;
+var rbWins = [];
+
+function rbEsc(s){
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function rbLoadLog(){
+  try { return JSON.parse(localStorage.getItem(RB_LOG_KEY) || '[]'); } catch(e){ return []; }
+}
+function rbAddLog(entry){
+  var log = rbLoadLog();
+  log.unshift(entry);
+  if(log.length > 500) log = log.slice(0, 500);
+  try { localStorage.setItem(RB_LOG_KEY, JSON.stringify(log)); } catch(e){}
+  rbRenderLog();
+}
+function rbRenderLog(){
+  var log = rbLoadLog();
+  document.getElementById('rb-count').textContent = log.length ? log.length + ' pull' + (log.length === 1 ? '' : 's') + ' logged' : '';
+  document.getElementById('rb-log').innerHTML = log.length ? log.slice(0, 60).map(function(e){
+    return '<div class="card">' +
+      '<div class="card-name"><a href="' + rbEsc(e.url) + '" target="_blank" rel="noopener">' + rbEsc(e.repo) + '</a></div>' +
+      '<div class="card-meta"><span>' + rbEsc(e.file) + '</span><span>' + rbEsc(e.language) + '</span><span>found by ' + rbEsc(e.term) + '</span><span>' + rbEsc(String(e.at).replace('T', ' ').slice(0, 19)) + '</span></div>' +
+    '</div>';
+  }).join('') : '<div class="empty">nothing pulled yet, press start</div>';
+}
+function rbStatus(t){ document.getElementById('rb-status').textContent = t; }
+function rbVisible(){ return document.getElementById('view-rabbit').classList.contains('active'); }
+function rbSleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+
+async function rbFillPool(){
+  if(rbSearching) return rbSearching;
+  rbSearching = (async function(){
+    var term = rbLastTerm;
+    while(term === rbLastTerm) term = RB_TERMS[Math.floor(Math.random() * RB_TERMS.length)];
+    rbLastTerm = term;
+    var page = 1 + Math.floor(Math.random() * 5);
+    try {
+      var res = await fetch('https://api.github.com/search/repositories?q=' + encodeURIComponent(term) + '&per_page=50&page=' + page);
+      if(!res.ok){ rbStatus('github search said ' + res.status + ', waiting a minute'); await rbSleep(60000); return; }
+      var body = await res.json();
+      var fresh = (body.items || []).filter(function(r){ return !rbSeen[r.full_name] && !r.fork; }).map(function(r){
+        return { repo: r.full_name, branch: r.default_branch || 'main', language: r.language || 'unknown', url: r.html_url, term: term };
+      });
+      fresh.sort(function(){ return Math.random() - 0.5; });
+      rbPool = rbPool.concat(fresh);
+    } catch(e){ rbStatus('search failed, check connection'); await rbSleep(15000); }
+  })();
+  await rbSearching;
+  rbSearching = null;
+}
+
+async function rbNextRepo(){
+  var tries = 0;
+  while(!rbPool.length && rbRunning && tries < 5){ await rbFillPool(); tries++; }
+  if(!rbPool.length) return null;
+  var lang = rbPool.length > 1 ? rbPool[0].language : '';
+  var idx = 0;
+  for(var i = 0; i < rbPool.length; i++){ if(rbPool[i].language !== lang){ idx = i; break; } }
+  var pick = rbPool.splice(Math.random() < 0.5 ? 0 : idx, 1)[0];
+  rbSeen[pick.repo] = true;
+  return pick;
+}
+
+async function rbFetchFile(pick){
+  var generic = ['main.py', 'index.js', 'main.c', 'main.go', 'src/main.rs', 'src/main.cpp', 'src/index.js', 'app.py', 'index.html', 'Makefile', 'package.json', 'setup.py', 'CMakeLists.txt'];
+  var names = (RB_FILES[pick.language] || []).slice();
+  generic.forEach(function(g){ if(names.indexOf(g) < 0) names.push(g); });
+  names = names.concat(['README.md', 'readme.md', 'README']);
+  for(var i = 0; i < names.length; i++){
+    try {
+      var res = await fetch('https://raw.githubusercontent.com/' + pick.repo + '/' + encodeURIComponent(pick.branch) + '/' + names[i]);
+      if(res.ok){
+        var text = await res.text();
+        if(text.trim().length > 40) return { file: names[i], text: text.slice(0, 12000) };
+      }
+    } catch(e){}
+  }
+  return null;
+}
+
+function rbMakeWindows(){
+  var grid = document.getElementById('rb-grid');
+  var n = window.innerWidth >= 900 ? 6 : 4;
+  grid.innerHTML = '';
+  rbWins = [];
+  for(var i = 0; i < n; i++){
+    var w = document.createElement('div');
+    w.className = 'rb-win';
+    w.innerHTML = '<div class="rb-head">waiting</div><pre class="rb-body"></pre>';
+    grid.appendChild(w);
+    rbWins.push(w);
+  }
+}
+
+async function rbRunWindow(w, delay){
+  await rbSleep(delay);
+  var head = w.querySelector('.rb-head');
+  var body = w.querySelector('.rb-body');
+  while(rbRunning){
+    if(!rbVisible()){ await rbSleep(1000); continue; }
+    body.classList.remove('rb-hold');
+    body.textContent = '';
+    head.textContent = 'searching...';
+    var pick = await rbNextRepo();
+    if(!rbRunning) break;
+    if(!pick){ await rbSleep(5000); continue; }
+    head.textContent = pick.repo;
+    var got = await rbFetchFile(pick);
+    if(!got) continue;
+    head.textContent = pick.repo + ' / ' + got.file;
+    rbAddLog({ repo: pick.repo, file: got.file, language: pick.language, term: pick.term, url: pick.url + '/blob/' + pick.branch + '/' + got.file, at: new Date().toISOString() });
+    var pos = 0;
+    while(rbRunning && pos < got.text.length && body.scrollHeight <= body.clientHeight + 2){
+      var step = 2 + Math.floor(Math.random() * 6);
+      body.textContent += got.text.slice(pos, pos + step);
+      pos += step;
+      await rbSleep(16);
+    }
+    if(!rbRunning) break;
+    body.classList.add('rb-hold');
+    await rbSleep(RB_HOLD_MS);
+  }
+  head.textContent = 'stopped';
+}
+
+function rbStart(){
+  if(rbRunning) return;
+  rbRunning = true;
+  document.getElementById('rb-toggle').textContent = 'stop';
+  rbStatus('running, windows fill while this tab is open');
+  rbMakeWindows();
+  rbWins.forEach(function(w, i){ rbRunWindow(w, i * 1500); });
+}
+function rbStop(){
+  rbRunning = false;
+  document.getElementById('rb-toggle').textContent = 'start';
+  rbStatus('stopped');
+}
+
+document.getElementById('rb-toggle').addEventListener('click', function(){ if(rbRunning) rbStop(); else rbStart(); });
+document.getElementById('rb-clear').addEventListener('click', function(){
+  try { localStorage.removeItem(RB_LOG_KEY); } catch(e){}
+  rbRenderLog();
+});
+document.getElementById('rb-export').addEventListener('click', function(){
+  var blob = new Blob([JSON.stringify({ exported: new Date().toISOString(), pulls: rbLoadLog() }, null, 2)], { type: 'application/json' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'rabbit-log.json';
+  document.body.appendChild(a); a.click(); a.remove();
+});
+rbRenderLog();
 </script>
 
 </body>

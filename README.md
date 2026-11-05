@@ -8,6 +8,6 @@ Live at repofind-delta.vercel.app
 
 This app is checked every morning by Control Troll.
 
-Latest change. Added the Resolve tab, which looks up software by purpose, labels it with a bucket and the kinds of data it handles, and shows neighbors that share data.
+Latest change. Added the Rabbit tab, where black windows fill with code from random repos found by the stumble terms, hold for ten seconds, then refill, with every pull logged.
 
 See CHANGELOG.md for the full history.
