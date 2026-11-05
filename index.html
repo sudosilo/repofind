@@ -521,6 +521,7 @@ button:disabled{ opacity:0.55 !important; }
   <div class="tabs" id="tabs-menu">
     <div class="tab active" data-view="alerts">ALERTS</div>
     <div class="tab" data-view="find">FIND</div>
+    <div class="tab" data-view="resolve">RESOLVE</div>
     <div class="tab" data-view="watch">WATCH</div>
     <div class="tab" data-view="mylist">MY LIST</div>
     <div class="tab" data-view="archive">ARCHIVE</div>
@@ -678,6 +679,36 @@ button:disabled{ opacity:0.55 !important; }
   </div>
   <div class="count" id="sh-count"></div>
   <div id="sh-results"></div>
+</div>
+
+<!-- RESOLVE VIEW -->
+<div class="view" id="view-resolve">
+  <div class="banner">resolve looks up software by what it is for. type a purpose, label the good results with a bucket and the kinds of data they handle, and they join your catalog. labels stay on this device and go out with backup and export.</div>
+  <div class="panel">
+    <label for="rs-q">what should the software do</label>
+    <input type="text" id="rs-q" placeholder="xxxxxxxx">
+    <label for="rs-lang">language, optional</label>
+    <input type="text" id="rs-lang" placeholder="xxxxxxxx">
+    <button id="rs-go">resolve</button>
+    <div class="status" id="rs-status"></div>
+  </div>
+  <div class="panel">
+    <label for="rs-user">load every public repo from one github account</label>
+    <input type="text" id="rs-user" placeholder="xxxxxxxx">
+    <button id="rs-user-go">load repos to label</button>
+    <div class="status" id="rs-user-status"></div>
+  </div>
+  <div class="count" id="rs-count"></div>
+  <div id="rs-results"></div>
+  <div class="panel">
+    <label for="rs-bucket-filter">your catalog</label>
+    <select id="rs-bucket-filter"></select>
+    <div class="btn-row">
+      <button class="btn-ghost" id="rs-export">export catalog json</button>
+    </div>
+    <div class="status" id="rs-cat-status"></div>
+  </div>
+  <div id="rs-catalog"></div>
 </div>
 
 <!-- SHODAN VIEW -->
@@ -2734,7 +2765,7 @@ async function swCheckAll(){
 document.getElementById('sw-checkall').addEventListener('click', swCheckAll);
 
 /* ---------- BACKUP, export and import everything stored on this device ---------- */
-var BACKUP_KEYS = ['tp_mylist', 'tp_watch', 'tp_admin_key', 'tp_sitewatch', 'tp_eq_discovered', 'sd_api_key', 'tp_api_base'];
+var BACKUP_KEYS = ['tp_mylist', 'tp_watch', 'tp_admin_key', 'tp_sitewatch', 'tp_eq_discovered', 'sd_api_key', 'tp_api_base', 'rf_resolver', 'rf_resolver_log'];
 
 var savedApiBase = localStorage.getItem('tp_api_base');
 if(savedApiBase) document.getElementById('ba-apibase').value = savedApiBase;
@@ -2933,6 +2964,279 @@ document.getElementById('sw-stumble-btn').addEventListener('click', async functi
   var after = swLoad()[url];
   statusEl.textContent = after.lastError ? (data[url].nickname || url) + ', ' + after.lastError : (data[url].nickname || url) + ', rechecked, hash ' + after.lastHash.slice(0,12);
 });
+</script>
+<script>
+/* ---------- RESOLVE, software looked up by purpose ---------- */
+var RS_KEY = 'rf_resolver';
+var RS_LOG_KEY = 'rf_resolver_log';
+var RS_START_BUCKETS = ['vehicles and maintenance', 'money and payments', 'maps and routes', 'music and audio', 'games', 'search and discovery', 'notes and writing', 'monitoring and alerts', 'hardware and devices'];
+var rsLast = [];
+
+function rsEsc(s){
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function rsLoad(){
+  try { return JSON.parse(localStorage.getItem(RS_KEY) || '{}'); } catch(e){ return {}; }
+}
+function rsSave(data){
+  try { localStorage.setItem(RS_KEY, JSON.stringify(data)); } catch(e){}
+}
+function rsLog(entry){
+  var log;
+  try { log = JSON.parse(localStorage.getItem(RS_LOG_KEY) || '[]'); } catch(e){ log = []; }
+  entry.at = new Date().toISOString();
+  log.push(entry);
+  if(log.length > 2000) log = log.slice(-2000);
+  try { localStorage.setItem(RS_LOG_KEY, JSON.stringify(log)); } catch(e){}
+}
+function rsBuckets(){
+  var set = {};
+  RS_START_BUCKETS.forEach(function(b){ set[b] = true; });
+  var data = rsLoad();
+  Object.keys(data).forEach(function(k){ if(data[k].bucket) set[data[k].bucket] = true; });
+  return Object.keys(set).sort();
+}
+function rsEra(dateStr){
+  var d = new Date(dateStr);
+  if(!dateStr || isNaN(d.getTime())) return 'unknown';
+  return (Math.floor(d.getUTCFullYear() / 10) * 10) + 's';
+}
+function rsTypes(text){
+  return String(text || '').split(',').map(function(t){ return t.trim().toLowerCase(); }).filter(Boolean);
+}
+function rsFromGithub(r){
+  return {
+    url: r.html_url,
+    name: r.full_name,
+    host: 'github',
+    era: rsEra(r.created_at),
+    language: r.language || 'unknown',
+    license: (r.license && r.license.spdx_id && r.license.spdx_id !== 'NOASSERTION') ? r.license.spdx_id : 'none listed',
+    description: r.description || '',
+    stars: r.stargazers_count || 0
+  };
+}
+function rsFromArchive(o){
+  return {
+    url: o.url,
+    name: o.url.replace(/^https?:\/\//, ''),
+    host: 'software heritage',
+    era: 'unknown',
+    language: 'unknown',
+    license: 'unknown',
+    description: '',
+    stars: 0
+  };
+}
+
+async function rsSearchGithub(intent, lang){
+  var q = intent + ' in:name,description,readme' + (lang ? ' language:' + lang : '');
+  var res = await fetch('https://api.github.com/search/repositories?q=' + encodeURIComponent(q) + '&per_page=15');
+  if(!res.ok) throw new Error('github ' + res.status);
+  var body = await res.json();
+  return (body.items || []).map(rsFromGithub);
+}
+async function rsSearchArchive(intent){
+  var words = intent.split(/\s+/).filter(function(w){ return w.length > 3; });
+  if(!words.length) return [];
+  var res = await fetch('https://archive.softwareheritage.org/api/1/origin/search/' + encodeURIComponent(words.join(' ')) + '/?limit=10&with_visit=true');
+  if(!res.ok) return [];
+  var items = await res.json();
+  return Array.isArray(items) ? items.map(rsFromArchive) : [];
+}
+
+function rsCardHtml(rec, i, saved){
+  var label = saved ? saved : null;
+  var bucketOpts = rsBuckets().map(function(b){
+    return '<option value="' + rsEsc(b) + '"' + (label && label.bucket === b ? ' selected' : '') + '>' + rsEsc(b) + '</option>';
+  }).join('') + '<option value="__new">new bucket</option>';
+  return '<div class="card">' +
+    '<div class="card-name"><a href="' + rsEsc(rec.url) + '" target="_blank" rel="noopener">' + rsEsc(rec.name) + '</a></div>' +
+    (rec.description ? '<div>' + rsEsc(rec.description) + '</div>' : '') +
+    '<div class="card-meta">' +
+      '<span>' + rsEsc(rec.host) + '</span>' +
+      '<span>' + rsEsc(rec.era) + '</span>' +
+      '<span>' + rsEsc(rec.language) + '</span>' +
+      '<span>license ' + rsEsc(rec.license) + '</span>' +
+      (label ? '<span>in ' + rsEsc(label.bucket) + '</span>' : '') +
+    '</div>' +
+    '<label>bucket</label>' +
+    '<select data-rs-bucket="' + i + '">' + bucketOpts + '</select>' +
+    '<input type="text" data-rs-newbucket="' + i + '" placeholder="xxxxxxxx" style="display:none">' +
+    '<label>kinds of data, separated by commas</label>' +
+    '<input type="text" data-rs-types="' + i + '" placeholder="xxxxxxxx" value="' + rsEsc(label ? label.datatypes.join(', ') : '') + '">' +
+    '<label>what it does, in plain words</label>' +
+    '<input type="text" data-rs-desc="' + i + '" placeholder="xxxxxxxx" value="' + rsEsc(label ? label.plain : '') + '">' +
+    '<div class="btn-row"><button class="btn-ghost" data-rs-save="' + i + '">' + (label ? 'update label' : 'save to catalog') + '</button></div>' +
+  '</div>';
+}
+
+function rsRenderResults(list, intent){
+  var box = document.getElementById('rs-results');
+  var data = rsLoad();
+  rsLast = list;
+  document.getElementById('rs-count').textContent = list.length ? list.length + ' result' + (list.length === 1 ? '' : 's') : '';
+  if(!list.length){
+    box.innerHTML = '<div class="empty">nothing matched, try fewer or plainer words</div>';
+    return;
+  }
+  box.innerHTML = list.map(function(rec, i){ return rsCardHtml(rec, i, data[rec.url]); }).join('');
+  Array.prototype.forEach.call(box.querySelectorAll('[data-rs-bucket]'), function(sel){
+    sel.addEventListener('change', function(){
+      var nb = box.querySelector('[data-rs-newbucket="' + sel.getAttribute('data-rs-bucket') + '"]');
+      nb.style.display = sel.value === '__new' ? '' : 'none';
+    });
+  });
+  Array.prototype.forEach.call(box.querySelectorAll('[data-rs-save]'), function(btn){
+    btn.addEventListener('click', function(){ rsSaveResult(Number(btn.getAttribute('data-rs-save')), intent, btn); });
+  });
+}
+
+async function rsAttachSwhid(url){
+  try {
+    var res = await fetch('https://archive.softwareheritage.org/api/1/origin/' + encodeURIComponent(url) + '/visit/latest/?require_snapshot=true');
+    if(!res.ok) return;
+    var v = await res.json();
+    if(!v.snapshot) return;
+    var data = rsLoad();
+    if(data[url]){ data[url].swhid = 'swh:1:snp:' + v.snapshot; rsSave(data); rsRenderCatalog(); }
+  } catch(e){}
+}
+
+function rsSaveResult(i, intent, btn){
+  var rec = rsLast[i];
+  if(!rec) return;
+  var box = document.getElementById('rs-results');
+  var sel = box.querySelector('[data-rs-bucket="' + i + '"]');
+  var bucket = sel.value === '__new' ? box.querySelector('[data-rs-newbucket="' + i + '"]').value.trim().toLowerCase() : sel.value;
+  if(!bucket){ btn.textContent = 'name the new bucket first'; return; }
+  var data = rsLoad();
+  var old = data[rec.url] || {};
+  data[rec.url] = {
+    url: rec.url, name: rec.name, host: rec.host, era: rec.era, language: rec.language,
+    license: rec.license, description: rec.description,
+    bucket: bucket,
+    datatypes: rsTypes(box.querySelector('[data-rs-types="' + i + '"]').value),
+    plain: box.querySelector('[data-rs-desc="' + i + '"]').value.trim(),
+    swhid: old.swhid || '',
+    saved: old.saved || new Date().toISOString(),
+    updated: new Date().toISOString()
+  };
+  rsSave(data);
+  rsLog({ type: 'save', intent: intent || '', url: rec.url, rank: i, bucket: bucket });
+  btn.textContent = 'saved';
+  if(!data[rec.url].swhid) rsAttachSwhid(rec.url);
+  rsRenderCatalog();
+}
+
+async function rsResolve(){
+  var intent = document.getElementById('rs-q').value.trim();
+  var lang = document.getElementById('rs-lang').value.trim();
+  var status = document.getElementById('rs-status');
+  var go = document.getElementById('rs-go');
+  if(!intent){ status.textContent = 'type what the software should do first'; return; }
+  go.disabled = true;
+  status.textContent = 'searching github and software heritage...';
+  var gh = [], sh = [], note = '';
+  try { gh = await rsSearchGithub(intent, lang); } catch(e){ note = ', github search failed or hit its hourly limit'; }
+  if(!lang){ try { sh = await rsSearchArchive(intent); } catch(e){} }
+  var seen = {};
+  var all = gh.concat(sh).filter(function(r){ if(seen[r.url]) return false; seen[r.url] = true; return true; });
+  rsLog({ type: 'search', intent: intent, language: lang, results: all.length });
+  rsRenderResults(all, intent);
+  status.textContent = 'done' + note;
+  go.disabled = false;
+}
+
+async function rsLoadUser(){
+  var user = document.getElementById('rs-user').value.trim();
+  var status = document.getElementById('rs-user-status');
+  if(!user){ status.textContent = 'type a github account name first'; return; }
+  status.textContent = 'loading repos...';
+  var all = [];
+  try {
+    for(var page = 1; page <= 10; page++){
+      var res = await fetch('https://api.github.com/users/' + encodeURIComponent(user) + '/repos?per_page=100&sort=updated&page=' + page);
+      if(!res.ok){ status.textContent = 'github said ' + res.status; break; }
+      var items = await res.json();
+      all = all.concat(items.map(rsFromGithub));
+      if(items.length < 100) break;
+    }
+  } catch(e){ status.textContent = 'request failed, check connection'; }
+  rsLog({ type: 'load-account', results: all.length });
+  rsRenderResults(all, '');
+  if(all.length) status.textContent = all.length + ' repos loaded, label them below';
+}
+
+function rsRenderCatalog(){
+  var data = rsLoad();
+  var keys = Object.keys(data);
+  var filter = document.getElementById('rs-bucket-filter');
+  var current = filter.value || '__all';
+  var counts = {};
+  keys.forEach(function(k){ var b = data[k].bucket || 'unsorted'; counts[b] = (counts[b] || 0) + 1; });
+  filter.innerHTML = '<option value="__all">all buckets (' + keys.length + ')</option>' +
+    Object.keys(counts).sort().map(function(b){ return '<option value="' + rsEsc(b) + '">' + rsEsc(b) + ' (' + counts[b] + ')</option>'; }).join('');
+  filter.value = (current === '__all' || counts[current]) ? current : '__all';
+  var shown = keys.filter(function(k){ return filter.value === '__all' || data[k].bucket === filter.value; });
+  var box = document.getElementById('rs-catalog');
+  if(!keys.length){ box.innerHTML = '<div class="empty">no labeled software yet, resolve something and save it</div>'; return; }
+  box.innerHTML = shown.map(function(k){
+    var r = data[k];
+    return '<div class="card">' +
+      '<div class="card-name"><a href="' + rsEsc(r.url) + '" target="_blank" rel="noopener">' + rsEsc(r.name) + '</a></div>' +
+      (r.plain ? '<div>' + rsEsc(r.plain) + '</div>' : '') +
+      '<div class="card-meta"><span>' + rsEsc(r.bucket) + '</span><span>' + rsEsc(r.era) + '</span><span>' + rsEsc(r.language) + '</span><span>license ' + rsEsc(r.license) + '</span></div>' +
+      (r.datatypes.length ? '<div class="card-meta"><span>data: ' + rsEsc(r.datatypes.join(', ')) + '</span></div>' : '') +
+      (r.swhid ? '<div class="card-meta"><span>' + rsEsc(r.swhid) + '</span></div>' : '') +
+      '<div class="btn-row"><button class="btn-ghost" data-rs-nb="' + rsEsc(k) + '">neighbors</button><button class="btn-ghost" data-rs-del="' + rsEsc(k) + '">remove</button></div>' +
+      '<div data-rs-nbout="' + rsEsc(k) + '"></div>' +
+    '</div>';
+  }).join('');
+  Array.prototype.forEach.call(box.querySelectorAll('[data-rs-nb]'), function(btn){
+    btn.addEventListener('click', function(){ rsNeighbors(btn.getAttribute('data-rs-nb')); });
+  });
+  Array.prototype.forEach.call(box.querySelectorAll('[data-rs-del]'), function(btn){
+    btn.addEventListener('click', function(){
+      var d = rsLoad(); delete d[btn.getAttribute('data-rs-del')]; rsSave(d); rsRenderCatalog();
+    });
+  });
+}
+
+function rsNeighbors(url){
+  var data = rsLoad();
+  var me = data[url];
+  var out = document.querySelector('[data-rs-nbout="' + url.replace(/"/g, '\\"') + '"]');
+  if(!me || !out) return;
+  var mine = {};
+  me.datatypes.forEach(function(t){ mine[t] = true; });
+  var hits = Object.keys(data).filter(function(k){ return k !== url; }).map(function(k){
+    var shared = data[k].datatypes.filter(function(t){ return mine[t]; });
+    return { rec: data[k], shared: shared };
+  }).filter(function(h){ return h.shared.length; }).sort(function(a, b){ return b.shared.length - a.shared.length; });
+  rsLog({ type: 'neighbors', url: url, results: hits.length });
+  if(!me.datatypes.length){ out.innerHTML = '<div class="empty">add kinds of data to this one first</div>'; return; }
+  out.innerHTML = hits.length ? hits.map(function(h){
+    return '<div class="card-meta"><span>' + rsEsc(h.rec.name) + '</span><span>shares ' + rsEsc(h.shared.join(', ')) + '</span></div>';
+  }).join('') : '<div class="empty">nothing else shares this data yet</div>';
+}
+
+document.getElementById('rs-go').addEventListener('click', rsResolve);
+document.getElementById('rs-q').addEventListener('keydown', function(e){ if(e.key === 'Enter') rsResolve(); });
+document.getElementById('rs-user-go').addEventListener('click', rsLoadUser);
+document.getElementById('rs-bucket-filter').addEventListener('change', rsRenderCatalog);
+document.getElementById('rs-export').addEventListener('click', function(){
+  var log;
+  try { log = JSON.parse(localStorage.getItem(RS_LOG_KEY) || '[]'); } catch(e){ log = []; }
+  var bundle = { exported: new Date().toISOString(), records: rsLoad(), log: log };
+  var blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'resolver-catalog.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  document.getElementById('rs-cat-status').textContent = 'exported ' + Object.keys(rsLoad()).length + ' records';
+});
+rsRenderCatalog();
 </script>
 
 </body>
