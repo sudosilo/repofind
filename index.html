@@ -4222,5 +4222,27 @@ function tdOpenCatalog(name){
   }
 })();
 </script>
+<style>
+.banner.hid{display:none}
+.info-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;margin:0 0 10px;border:3px solid #111;border-radius:50%;background:#ffd43b;color:#111;font:800 18px/1 Georgia,serif;font-style:italic;cursor:pointer;box-shadow:2px 2px 0 #111}
+</style>
+<script>
+/* every info banner starts closed behind an i button. tap the i to open or close it. */
+(function(){
+  document.querySelectorAll('.banner').forEach(function(b){
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'info-btn';
+    btn.textContent = 'i';
+    btn.setAttribute('aria-label', 'show info');
+    b.classList.add('hid');
+    b.parentNode.insertBefore(btn, b);
+    btn.addEventListener('click', function(){
+      var open = b.classList.toggle('hid') === false;
+      btn.setAttribute('aria-label', open ? 'hide info' : 'show info');
+    });
+  });
+})();
+</script>
 </body>
 </html>
