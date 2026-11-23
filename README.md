@@ -8,6 +8,6 @@ Live at repofind-delta.vercel.app
 
 This app is checked every morning by Control Troll.
 
-Latest change. Added Conveyor Sim links. Teardowns open in Conveyor Sim as built or as the rebuild, and builder stacks, rolls and templates have an open in conveyor sim button.
+Latest change. 2026-11-22, v2026.11.22. Added Conveyor Sim links. Each teardown can open in Conveyor Sim two ways, as built from its layers or as the rebuild, and the builder stack, rolled stacks and templates each have an open in conveyor sim button. Layers with no machine yet show up as gaps there. Info banners now start closed behind an i button. Tap the i to open or close one.
 
 See CHANGELOG.md for the full history.
